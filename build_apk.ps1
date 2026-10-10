@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"
 $workspace = $PSScriptRoot
 if (-not $workspace) { $workspace = Split-Path -Parent $MyInvocation.MyCommand.Path }
 if (-not $workspace) { $workspace = Get-Location }
@@ -22,7 +22,7 @@ Copy-Item "$workspace\icon.svg" "$tempBuild\src\main\assets\icon.svg" -Force
 
 Copy-Item "$workspace\android\app\src\main\AndroidManifest.xml" "$tempBuild\src\main\AndroidManifest.xml" -Force
 Copy-Item "$workspace\android\app\src\main\res\*" "$tempBuild\src\main\res" -Recurse -Force
-Copy-Item "$workspace\android\app\src\main\java\com\minimal\timetable\MainActivity.java" "$tempBuild\src\main\java\com\minimal\timetable\MainActivity.java" -Force
+Copy-Item "$workspace\android\app\src\main\java\com\minimal\timetable\*.java" "$tempBuild\src\main\java\com\minimal\timetable\" -Force
 
 $javaHome = "C:\Program Files\Microsoft\jdk-17.0.20.101-hotspot"
 $javac = "$javaHome\bin\javac.exe"

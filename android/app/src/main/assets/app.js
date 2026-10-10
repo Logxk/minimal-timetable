@@ -315,7 +315,11 @@
     totalPeriods: 11,
     theme: 'auto',
     showOtherWeeks: false, // 默认仅展示当前周活跃课程，保证界面极简清爽
-    courses: []
+    courses: [],
+    classReminderEnabled: false, // 课前10分钟提醒开关
+    calendarSynced: false,       // 是否已同步到系统日历
+    calendarSyncCount: 0,        // 已同步的日历事件数量
+    lastRemindedCourseKey: null  // 避免课前重复弹窗提示的去重缓存
   };
 
   const el = {};
@@ -332,10 +336,11 @@
     renderTimeColumn();
     changeWeek(state.actualWeek);
 
-    // 自动定时轮询上课状态 (每分钟更新一次)
+    // 自动定时轮询上课状态与课前提醒 (每30秒更新一次，保证10分钟提醒准时捕获)
+    checkCurrentClass();
     setInterval(() => {
       checkCurrentClass();
-    }, 60000);
+    }, 30000);
 
     // 注册 PWA Service Worker 离线缓存
     if ('serviceWorker' in navigator) {
@@ -409,6 +414,19 @@
     el.detailCourseWeeksText = document.getElementById('detailCourseWeeksText');
     el.detailWeeksGrid = document.getElementById('detailWeeksGrid');
     el.detailConflictBox = document.getElementById('detailConflictBox');
+
+    // 课前10分钟提醒与日历同步 DOM
+    el.classReminderSwitch = document.getElementById('classReminderSwitch');
+    el.testReminderBtn = document.getElementById('testReminderBtn');
+    el.calendarStatusBadge = document.getElementById('calendarStatusBadge');
+    el.syncCalendarBtn = document.getElementById('syncCalendarBtn');
+    el.clearCalendarBtn = document.getElementById('clearCalendarBtn');
+
+    // 课前浮动弹窗横幅 DOM
+    el.classReminderBanner = document.getElementById('classReminderBanner');
+    el.reminderBannerTitle = document.getElementById('reminderBannerTitle');
+    el.reminderBannerDesc = document.getElementById('reminderBannerDesc');
+    el.reminderBannerClose = document.getElementById('reminderBannerClose');
   }
 
   // ==========================================================================
@@ -423,11 +441,17 @@
         state.totalPeriods = parsed.totalPeriods || 11;
         state.theme = parsed.theme || 'auto';
         state.showOtherWeeks = parsed.showOtherWeeks === true;
+        state.classReminderEnabled = parsed.classReminderEnabled === true;
+        state.calendarSynced = parsed.calendarSynced === true;
+        state.calendarSyncCount = parsed.calendarSyncCount || 0;
       } else {
         state.semesterStartDate = '2026-08-31';
         state.totalPeriods = 11;
         state.theme = 'auto';
         state.showOtherWeeks = false;
+        state.classReminderEnabled = false;
+        state.calendarSynced = false;
+        state.calendarSyncCount = 0;
         saveSettings();
       }
     } catch (e) {
@@ -436,6 +460,10 @@
 
     el.semesterStartDateInput.value = state.semesterStartDate;
     el.totalPeriodsSelect.value = state.totalPeriods;
+    if (el.classReminderSwitch) {
+      el.classReminderSwitch.checked = state.classReminderEnabled;
+    }
+    updateCalendarBadgeUI();
 
     // 计算实际当前周
     calculateActualWeek();
@@ -447,7 +475,10 @@
       semesterStartDate: state.semesterStartDate,
       totalPeriods: state.totalPeriods,
       theme: state.theme,
-      showOtherWeeks: state.showOtherWeeks
+      showOtherWeeks: state.showOtherWeeks,
+      classReminderEnabled: state.classReminderEnabled,
+      calendarSynced: state.calendarSynced,
+      calendarSyncCount: state.calendarSyncCount
     };
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(data));
   }
@@ -471,6 +502,7 @@
 
   function saveCourses() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state.courses));
+    updateNativeAlarmsIfEnabled();
   }
 
   // 动态获取导入课表中最后有课的一周 (课表截止周)
@@ -607,6 +639,7 @@
     el.menuBtn.addEventListener('click', () => {
       history.pushState({ modal: 'settings' }, '');
       renderCourseManagementList();
+      updateCalendarBadgeUI();
       el.settingsModal.classList.remove('hidden');
     });
 
@@ -709,6 +742,38 @@
     }
 
     el.exportIcsBtn.addEventListener('click', exportIcs);
+
+    // 课前10分钟提醒与日历同步事件监听
+    if (el.classReminderSwitch) {
+      el.classReminderSwitch.addEventListener('change', handleReminderToggle);
+    }
+    if (el.testReminderBtn) {
+      el.testReminderBtn.addEventListener('click', handleTestReminder);
+    }
+    if (el.syncCalendarBtn) {
+      el.syncCalendarBtn.addEventListener('click', handleCalendarSync);
+    }
+    if (el.clearCalendarBtn) {
+      el.clearCalendarBtn.addEventListener('click', handleCalendarClear);
+    }
+    if (el.classReminderBanner) {
+      el.classReminderBanner.addEventListener('click', (e) => {
+        if (e.target.closest('#reminderBannerClose')) {
+          hideReminderBanner();
+          return;
+        }
+        if (activeBannerCourse) {
+          hideReminderBanner();
+          openCourseDetail(activeBannerCourse);
+        }
+      });
+    }
+    if (el.reminderBannerClose) {
+      el.reminderBannerClose.addEventListener('click', (e) => {
+        e.stopPropagation();
+        hideReminderBanner();
+      });
+    }
 
     if (el.testScenarioBtn) {
       el.testScenarioBtn.addEventListener('click', () => {
@@ -1116,31 +1181,341 @@
   function checkCurrentClass() {
     document.querySelectorAll('.course-card.current-class').forEach(c => c.classList.remove('current-class'));
 
-    if (state.currentWeek !== state.actualWeek) return;
-
     const now = new Date();
     const today = (now.getDay() || 7);
     const nowTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
-    let activePeriod = -1;
-    for (let i = 0; i < state.totalPeriods; i++) {
-      const slot = DEFAULT_TIMES[i];
-      if (slot && nowTimeStr >= slot.start && nowTimeStr <= slot.end) {
-        activePeriod = i + 1;
-        break;
+    if (state.currentWeek === state.actualWeek) {
+      let activePeriod = -1;
+      for (let i = 0; i < state.totalPeriods; i++) {
+        const slot = DEFAULT_TIMES[i];
+        if (slot && nowTimeStr >= slot.start && nowTimeStr <= slot.end) {
+          activePeriod = i + 1;
+          break;
+        }
+      }
+
+      if (activePeriod !== -1) {
+        const todayCards = document.querySelectorAll(`.day-grid-column[data-day="${today}"] .course-card:not(.not-this-week)`);
+        todayCards.forEach(card => {
+          const start = parseInt(card.dataset.startPeriod, 10);
+          const end = parseInt(card.dataset.endPeriod, 10);
+          if (activePeriod >= start && activePeriod <= end) {
+            card.classList.add('current-class');
+          }
+        });
       }
     }
 
-    if (activePeriod === -1) return;
+    // 课前10分钟即时消息与弹窗提醒轮询检查
+    checkUpcomingCourseReminder(now, today);
+  }
 
-    const todayCards = document.querySelectorAll(`.day-grid-column[data-day="${today}"] .course-card:not(.not-this-week)`);
-    todayCards.forEach(card => {
-      const start = parseInt(card.dataset.startPeriod, 10);
-      const end = parseInt(card.dataset.endPeriod, 10);
-      if (activePeriod >= start && activePeriod <= end) {
-        card.classList.add('current-class');
+  // ==========================================================================
+  // 课前10分钟提醒与手机系统日程表管理 (超高性能、零后台常驻、随时开关/一键清空)
+  // ==========================================================================
+  function hasNativeBridge() {
+    return typeof window.AndroidBridge !== 'undefined' && window.AndroidBridge !== null;
+  }
+
+  function updateNativeAlarmsIfEnabled() {
+    if (hasNativeBridge()) {
+      try {
+        if (state.classReminderEnabled) {
+          window.AndroidBridge.setAlarmReminders(true, JSON.stringify(state.courses), state.semesterStartDate);
+        }
+      } catch (e) {
+        console.error('updateNativeAlarms error:', e);
       }
+    }
+  }
+
+  function updateCalendarBadgeUI() {
+    if (!el.calendarStatusBadge) return;
+    if (hasNativeBridge()) {
+      try {
+        const actualCount = window.AndroidBridge.getCalendarEventCount();
+        if (actualCount > 0) {
+          state.calendarSynced = true;
+          state.calendarSyncCount = actualCount;
+        } else {
+          state.calendarSynced = false;
+          state.calendarSyncCount = 0;
+        }
+      } catch (e) {
+        console.error('getCalendarEventCount error:', e);
+      }
+    }
+
+    if (state.calendarSynced && state.calendarSyncCount > 0) {
+      el.calendarStatusBadge.className = 'calendar-badge synced';
+      el.calendarStatusBadge.textContent = `已同步 (${state.calendarSyncCount}节)`;
+    } else {
+      el.calendarStatusBadge.className = 'calendar-badge un-synced';
+      el.calendarStatusBadge.textContent = '未同步';
+    }
+  }
+
+  function handleReminderToggle() {
+    state.classReminderEnabled = el.classReminderSwitch.checked;
+    saveSettings();
+
+    if (state.classReminderEnabled) {
+      if (hasNativeBridge()) {
+        try {
+          if (!window.AndroidBridge.hasNotificationPermission()) {
+            window.AndroidBridge.requestNotificationPermission();
+          }
+          const resStr = window.AndroidBridge.setAlarmReminders(true, JSON.stringify(state.courses), state.semesterStartDate);
+          const res = JSON.parse(resStr);
+          if (window.AndroidBridge.showToast) {
+            window.AndroidBridge.showToast(res.message || '已开启课前10分钟提醒');
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      } else {
+        if ('Notification' in window && Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+          Notification.requestPermission();
+        }
+      }
+    } else {
+      if (hasNativeBridge()) {
+        try {
+          const resStr = window.AndroidBridge.setAlarmReminders(false, "[]", state.semesterStartDate);
+          const res = JSON.parse(resStr);
+          if (window.AndroidBridge.showToast) {
+            window.AndroidBridge.showToast(res.message || '已关闭课前10分钟提醒');
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
+  }
+
+  function handleTestReminder() {
+    const testCourse = (state.courses && state.courses.length > 0) ? state.courses[0] : {
+      name: '高等数学 (上)',
+      room: '教1-101',
+      teacher: '张教授',
+      startPeriod: 1
+    };
+
+    showReminderBanner(testCourse, 10);
+
+    const cleanRoom = (testCourse.room || '')
+      .replace(/\(本部\)/g, '')
+      .replace(/（本部）/g, '')
+      .trim();
+
+    if (hasNativeBridge()) {
+      try {
+        if (!window.AndroidBridge.hasNotificationPermission()) {
+          window.AndroidBridge.requestNotificationPermission();
+        }
+        window.AndroidBridge.postHeadsUpNotification(
+          testCourse.name,
+          cleanRoom || '教1-101',
+          testCourse.teacher || '任课教师',
+          DEFAULT_TIMES[testCourse.startPeriod - 1]?.start || '08:00'
+        );
+        if (window.AndroidBridge.showToast) {
+          window.AndroidBridge.showToast('已弹出课前提醒测试通知');
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    } else {
+      if ('Notification' in window) {
+        if (Notification.permission === 'granted') {
+          new Notification(`🔔 课前 10 分钟提醒: ${testCourse.name}`, {
+            body: `地点: ${cleanRoom || '教1-101'} | 教师: ${testCourse.teacher || '任课教师'} | 时间: ${DEFAULT_TIMES[testCourse.startPeriod - 1]?.start || '08:00'}`
+          });
+        } else if (Notification.permission !== 'denied') {
+          Notification.requestPermission().then(p => {
+            if (p === 'granted') {
+              new Notification(`🔔 课前 10 分钟提醒: ${testCourse.name}`, {
+                body: `地点: ${cleanRoom || '教1-101'} | 教师: ${testCourse.teacher || '任课教师'} | 时间: ${DEFAULT_TIMES[testCourse.startPeriod - 1]?.start || '08:00'}`
+              });
+            }
+          });
+        }
+      }
+    }
+  }
+
+  function handleCalendarSync() {
+    if (!state.courses.length) {
+      alert('课表为空，无法同步到手机日程表。');
+      return;
+    }
+
+    if (hasNativeBridge()) {
+      try {
+        if (!window.AndroidBridge.hasCalendarPermission()) {
+          window.AndroidBridge.requestCalendarPermission();
+          alert('请在随后弹出的系统权限对话框中允许“日历”权限，然后再点击写入。');
+          return;
+        }
+
+        const resStr = window.AndroidBridge.syncCoursesToCalendar(JSON.stringify(state.courses), state.semesterStartDate);
+        const res = JSON.parse(resStr);
+        if (res.success) {
+          state.calendarSynced = true;
+          state.calendarSyncCount = res.count || 0;
+          saveSettings();
+          updateCalendarBadgeUI();
+          if (window.AndroidBridge.showToast) {
+            window.AndroidBridge.showToast(`成功写入 ${res.count} 条日程并设10分钟提醒！`);
+          } else {
+            alert(res.message);
+          }
+        } else {
+          alert('写入失败: ' + (res.message || '未知原因'));
+        }
+      } catch (e) {
+        alert('写入系统日历异常: ' + e.message);
+      }
+    } else {
+      if (confirm('当前在网页环境运行，无法直接写入手机原生日历。\n是否导出标准 .ics 日历文件，由系统日历一键导入？')) {
+        exportIcs();
+      }
+    }
+  }
+
+  function handleCalendarClear() {
+    if (hasNativeBridge()) {
+      try {
+        if (!window.AndroidBridge.hasCalendarPermission()) {
+          window.AndroidBridge.requestCalendarPermission();
+          alert('请在随后弹出的系统权限对话框中允许“日历”权限。');
+          return;
+        }
+
+        if (!confirm('确定要从手机系统日程表中一键清除所有已写入的课程日程吗？')) {
+          return;
+        }
+
+        const resStr = window.AndroidBridge.clearCalendarCourses();
+        const res = JSON.parse(resStr);
+        if (res.success) {
+          state.calendarSynced = false;
+          state.calendarSyncCount = 0;
+          saveSettings();
+          updateCalendarBadgeUI();
+          if (window.AndroidBridge.showToast) {
+            window.AndroidBridge.showToast(res.message || '已清空课表系统日程');
+          } else {
+            alert(res.message);
+          }
+        } else {
+          alert('清除失败: ' + (res.message || '未知原因'));
+        }
+      } catch (e) {
+        alert('清除系统日历异常: ' + e.message);
+      }
+    } else {
+      state.calendarSynced = false;
+      state.calendarSyncCount = 0;
+      saveSettings();
+      updateCalendarBadgeUI();
+      alert('已重置日程同步状态。');
+    }
+  }
+
+  let reminderBannerTimeout = null;
+  let activeBannerCourse = null;
+
+  function showReminderBanner(course, minutesLeft) {
+    if (!el.classReminderBanner) return;
+    activeBannerCourse = course;
+    const title = minutesLeft <= 1 ? `🔔 即将上课: ${course.name}` : `🔔 课前 ${minutesLeft} 分钟提醒: ${course.name}`;
+    const cleanRoom = (course.room || '')
+      .replace(/\(本部\)/g, '')
+      .replace(/（本部）/g, '')
+      .trim();
+    const desc = `地点: ${cleanRoom || '未定地点'} | 教师: ${course.teacher || '任课教师'}`;
+
+    el.reminderBannerTitle.textContent = title;
+    el.reminderBannerDesc.textContent = desc;
+    el.classReminderBanner.classList.remove('hidden');
+
+    if (reminderBannerTimeout) clearTimeout(reminderBannerTimeout);
+    // 自动展示 12 秒后淡出收起
+    reminderBannerTimeout = setTimeout(() => {
+      hideReminderBanner();
+    }, 12000);
+  }
+
+  function hideReminderBanner() {
+    if (el.classReminderBanner) {
+      el.classReminderBanner.classList.add('hidden');
+    }
+    activeBannerCourse = null;
+  }
+
+  function checkUpcomingCourseReminder(now, today) {
+    if (!state.classReminderEnabled) return;
+    if (!state.courses || state.courses.length === 0) return;
+
+    const currentActualWeek = state.actualWeek;
+    const todayCourses = state.courses.filter(c => {
+      if (c.day !== today) return false;
+      return isCourseInWeek(c, currentActualWeek);
     });
+
+    if (todayCourses.length === 0) return;
+
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+    for (const course of todayCourses) {
+      const startSlot = DEFAULT_TIMES[course.startPeriod - 1];
+      if (!startSlot) continue;
+
+      const [startH, startM] = startSlot.start.split(':').map(Number);
+      const classStartMinutes = startH * 60 + startM;
+      const diffMinutes = classStartMinutes - nowMinutes;
+
+      // 课前 10 分钟内 (0 <= diffMinutes <= 10)
+      if (diffMinutes >= 0 && diffMinutes <= 10) {
+        const reminderKey = `${course.id}_${today}_w${currentActualWeek}_p${course.startPeriod}_${now.toDateString()}`;
+        if (state.lastRemindedCourseKey === reminderKey) {
+          continue; // 本节课本次课前已经提醒过，不重复弹窗
+        }
+
+        state.lastRemindedCourseKey = reminderKey;
+
+        // 1. 弹出应用内顶部浮动横幅提醒
+        showReminderBanner(course, diffMinutes);
+
+        // 2. 原生通知栏弹窗提醒 (Native Heads-Up Notification)
+        const cleanRoom = (course.room || '')
+          .replace(/\(本部\)/g, '')
+          .replace(/（本部）/g, '')
+          .trim();
+
+        if (hasNativeBridge()) {
+          try {
+            window.AndroidBridge.postHeadsUpNotification(
+              course.name,
+              cleanRoom || '未定地点',
+              course.teacher || '任课教师',
+              startSlot.start
+            );
+          } catch (e) {
+            console.error('postHeadsUpNotification error:', e);
+          }
+        } else if ('Notification' in window && Notification.permission === 'granted') {
+          try {
+            new Notification(`🔔 课前 10 分钟提醒: ${course.name}`, {
+              body: `地点: ${cleanRoom || '未定'} | 教师: ${course.teacher || '未定'} | 时间: ${startSlot.start}`
+            });
+          } catch (e) {}
+        }
+        break;
+      }
+    }
   }
 
   // ==========================================================================

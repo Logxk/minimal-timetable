@@ -1283,3 +1283,219 @@ input:focus, select:focus {
   background-color: rgba(217, 72, 15, 0.2);
 }
 
+/* ==========================================================================
+   课前 10 分钟提醒与手机系统日程表样式 (高性能 / 现代原生手感)
+   ========================================================================== */
+.switch-toggle {
+  position: relative;
+  display: inline-block;
+  width: 46px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+.switch-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-toggle .slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--border-color, #dee2e6);
+  transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 26px;
+}
+
+.switch-toggle .slider:before {
+  position: absolute;
+  content: "";
+  height: 20px;
+  width: 20px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #ffffff;
+  transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+.switch-toggle input:checked + .slider {
+  background-color: var(--primary, #228be6);
+}
+
+.switch-toggle input:checked + .slider:before {
+  transform: translateX(20px);
+}
+
+/* 手机日历同步卡片 */
+.calendar-sync-box {
+  background-color: var(--bg-secondary, #f8f9fa);
+  border: 1px solid var(--border-color, #e9ecef);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-top: 6px;
+}
+
+.calendar-sync-title-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.calendar-sync-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.calendar-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 10px;
+  transition: all 0.2s ease;
+}
+
+.calendar-badge.un-synced {
+  background-color: var(--bg-tertiary, #e9ecef);
+  color: var(--text-muted, #868e96);
+}
+
+.calendar-badge.synced {
+  background-color: #d3f9d8;
+  color: #2b8a3e;
+}
+
+[data-theme="dark"] .calendar-badge.synced {
+  background-color: rgba(43, 138, 62, 0.25);
+  color: #69db7c;
+}
+
+.calendar-sync-desc {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+.calendar-actions-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.primary-btn-outline, .danger-btn-outline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 9px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.primary-btn-outline {
+  border: 1px solid var(--primary, #228be6);
+  color: var(--primary, #228be6);
+  background-color: transparent;
+}
+
+.primary-btn-outline:active {
+  background-color: rgba(34, 139, 230, 0.1);
+}
+
+.danger-btn-outline {
+  border: 1px solid #fa5252;
+  color: #fa5252;
+  background-color: transparent;
+}
+
+.danger-btn-outline:active {
+  background-color: rgba(250, 82, 82, 0.1);
+}
+
+/* 课前 10 分钟横幅通知 (Floating Heads-Up Alert) */
+.class-reminder-banner {
+  position: fixed;
+  top: calc(var(--header-height, 56px) + 8px);
+  left: 12px;
+  right: 12px;
+  z-index: 999;
+  background: linear-gradient(135deg, #1971c2, #1c7ed6);
+  color: #ffffff;
+  border-radius: 12px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 6px 18px rgba(25, 113, 194, 0.38);
+  animation: slideDownReminder 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  cursor: pointer;
+}
+
+@keyframes slideDownReminder {
+  from {
+    transform: translateY(-24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.reminder-banner-icon {
+  font-size: 20px;
+  line-height: 1;
+  animation: ringBell 1.2s infinite ease-in-out;
+}
+
+@keyframes ringBell {
+  0% { transform: rotate(0); }
+  20% { transform: rotate(-12deg); }
+  40% { transform: rotate(12deg); }
+  60% { transform: rotate(-8deg); }
+  80% { transform: rotate(8deg); }
+  100% { transform: rotate(0); }
+}
+
+.reminder-banner-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.reminder-banner-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reminder-banner-desc {
+  font-size: 11.5px;
+  opacity: 0.92;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reminder-banner-close {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 4px;
+  line-height: 1;
+}
+
+
