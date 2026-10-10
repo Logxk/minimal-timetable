@@ -544,12 +544,36 @@ public class MainActivity extends Activity {
                             }
                             PendingIntent pi = PendingIntent.getBroadcast(MainActivity.this, reqCode++, intent, flags);
 
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pi);
-                            } else {
-                                am.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pi);
+                            boolean canExact = true;
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                canExact = am.canScheduleExactAlarms();
                             }
-                            scheduledCount++;
+
+                            try {
+                                if (canExact) {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                        am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pi);
+                                    } else {
+                                        am.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pi);
+                                    }
+                                } else {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pi);
+                                    } else {
+                                        am.set(AlarmManager.RTC_WAKEUP, triggerTime, pi);
+                                    }
+                                }
+                                scheduledCount++;
+                            } catch (SecurityException se) {
+                                try {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pi);
+                                    } else {
+                                        am.set(AlarmManager.RTC_WAKEUP, triggerTime, pi);
+                                    }
+                                    scheduledCount++;
+                                } catch (Exception ignored) {}
+                            }
                         }
                     }
                 }

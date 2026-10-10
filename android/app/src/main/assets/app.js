@@ -1944,7 +1944,252 @@
     reader.readAsText(file);
   }
 
-  // 解析高校教务系统导出的 .xls / .csv / HTML / 纯文本课表
+  // ==========================================================================
+  // 二进制 Excel 97-2003 (BIFF8 / OLE2) 原生零依赖极速解析引擎 (<10ms 零依赖)
+  // ==========================================================================
+  function parseBinaryXlsBuffer(arrayBuffer) {
+    const data = new Uint8Array(arrayBuffer);
+    const view = new DataView(arrayBuffer);
+
+    if (data.length < 512 || view.getUint32(0, true) !== 0xE011CFD0 || view.getUint32(4, true) !== 0xE11AB1A1) {
+      throw new Error('Not an OLE2 binary XLS file');
+    }
+
+    const sectorSize = 1 << view.getUint16(30, true);
+    const dirFirstSector = view.getUint32(48, true);
+
+    const fatSectors = [];
+    for (let i = 0; i < 109; i++) {
+      const sec = view.getUint32(76 + i * 4, true);
+      if (sec === 0xFFFFFFFE || sec === 0xFFFFFFFF) break;
+      fatSectors.push(sec);
+    }
+
+    const fat = [];
+    for (const sec of fatSectors) {
+      const offset = (sec + 1) * sectorSize;
+      for (let i = 0; i < sectorSize; i += 4) {
+        fat.push(view.getUint32(offset + i, true));
+      }
+    }
+
+    function getStreamData(startSector, size) {
+      let sec = startSector;
+      const result = new Uint8Array(size);
+      let written = 0;
+      while (sec !== 0xFFFFFFFE && sec !== 0xFFFFFFFF && written < size) {
+        const offset = (sec + 1) * sectorSize;
+        const len = Math.min(sectorSize, size - written);
+        result.set(data.subarray(offset, offset + len), written);
+        written += len;
+        sec = fat[sec];
+      }
+      return result;
+    }
+
+    let dirSec = dirFirstSector;
+    const dirChunks = [];
+    let totalDirSize = 0;
+    while (dirSec !== 0xFFFFFFFE && dirSec !== 0xFFFFFFFF) {
+      const offset = (dirSec + 1) * sectorSize;
+      dirChunks.push(data.subarray(offset, offset + sectorSize));
+      totalDirSize += sectorSize;
+      dirSec = fat[dirSec];
+    }
+    const dirBuffer = new Uint8Array(totalDirSize);
+    let dOff = 0;
+    for (const ch of dirChunks) {
+      dirBuffer.set(ch, dOff);
+      dOff += ch.length;
+    }
+    const dirView = new DataView(dirBuffer.buffer, dirBuffer.byteOffset, dirBuffer.byteLength);
+
+    let workbookSector = -1;
+    let workbookSize = 0;
+    const decUtf16 = new TextDecoder('utf-16le');
+
+    for (let i = 0; i < dirBuffer.length; i += 128) {
+      const nameLen = dirView.getUint16(i + 64, true);
+      if (nameLen === 0) continue;
+      const name = decUtf16.decode(dirBuffer.subarray(i, i + nameLen - 2));
+      const startSec = dirView.getUint32(i + 116, true);
+      const size = dirView.getUint32(i + 120, true);
+
+      if (name.toLowerCase() === 'workbook' || name.toLowerCase() === 'book') {
+        workbookSector = startSec;
+        workbookSize = size;
+        break;
+      }
+    }
+
+    if (workbookSector === -1) {
+      throw new Error('未在 XLS 文件中找到 Workbook 数据流');
+    }
+
+    const wbBytes = getStreamData(workbookSector, workbookSize);
+    const wbView = new DataView(wbBytes.buffer, wbBytes.byteOffset, wbBytes.byteLength);
+
+    let pos = 0;
+    const sst = [];
+    const cells = {};
+    let maxRow = 0;
+    let maxCol = 0;
+
+    while (pos < wbBytes.length - 4) {
+      const recType = wbView.getUint16(pos, true);
+      const recLen = wbView.getUint16(pos + 2, true);
+      pos += 4;
+
+      if (pos + recLen > wbBytes.length) break;
+
+      if (recType === 0x00FC) { // SST
+        parseSSTBrowser(wbBytes, wbView, pos, recLen, sst);
+      } else if (recType === 0x00FD) { // LABELSST
+        const row = wbView.getUint16(pos, true);
+        const col = wbView.getUint16(pos + 2, true);
+        const sstIdx = wbView.getUint32(pos + 6, true);
+        if (sst[sstIdx] !== undefined) {
+          cells[`${row}_${col}`] = sst[sstIdx];
+          if (row > maxRow) maxRow = row;
+          if (col > maxCol) maxCol = col;
+        }
+      } else if (recType === 0x0204) { // LABEL
+        const row = wbView.getUint16(pos, true);
+        const col = wbView.getUint16(pos + 2, true);
+        const cch = wbView.getUint16(pos + 6, true);
+        const grbit = wbBytes[pos + 8];
+        const isUnicode = (grbit & 0x01) !== 0;
+        let str = '';
+        if (isUnicode) {
+          str = decUtf16.decode(wbBytes.subarray(pos + 9, pos + 9 + cch * 2));
+        } else {
+          str = new TextDecoder('latin1').decode(wbBytes.subarray(pos + 9, pos + 9 + cch));
+        }
+        cells[`${row}_${col}`] = str;
+        if (row > maxRow) maxRow = row;
+        if (col > maxCol) maxCol = col;
+      } else if (recType === 0x0203) { // NUMBER
+        const row = wbView.getUint16(pos, true);
+        const col = wbView.getUint16(pos + 2, true);
+        const val = wbView.getFloat64(pos + 6, true);
+        cells[`${row}_${col}`] = String(val);
+        if (row > maxRow) maxRow = row;
+        if (col > maxCol) maxCol = col;
+      } else if (recType === 0x027E) { // RK
+        const row = wbView.getUint16(pos, true);
+        const col = wbView.getUint16(pos + 2, true);
+        const rk = wbView.getUint32(pos + 6, true);
+        cells[`${row}_${col}`] = String(decodeRKVal(rk));
+        if (row > maxRow) maxRow = row;
+        if (col > maxCol) maxCol = col;
+      } else if (recType === 0x00BD) { // MULRK
+        const row = wbView.getUint16(pos, true);
+        const colFirst = wbView.getUint16(pos + 2, true);
+        const colLast = wbView.getUint16(pos + recLen - 2, true);
+        let rkPos = pos + 4;
+        for (let c = colFirst; c <= colLast; c++) {
+          const rk = wbView.getUint32(rkPos + 2, true);
+          cells[`${row}_${c}`] = String(decodeRKVal(rk));
+          if (row > maxRow) maxRow = row;
+          if (c > maxCol) maxCol = c;
+          rkPos += 6;
+        }
+      }
+
+      pos += recLen;
+    }
+
+    const rows = [];
+    for (let r = 0; r <= maxRow; r++) {
+      const row = [];
+      for (let c = 0; c <= maxCol; c++) {
+        row.push(cells[`${r}_${c}`] || '');
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  function decodeRKVal(rk) {
+    let val = 0;
+    if (rk & 0x02) {
+      val = rk >> 2;
+    } else {
+      const b = new ArrayBuffer(8);
+      const v = new DataView(b);
+      v.setUint32(4, rk & 0xFFFFFFFC, true);
+      val = v.getFloat64(0, true);
+    }
+    if (rk & 0x01) val /= 100;
+    return val;
+  }
+
+  function parseSSTBrowser(wbBytes, wbView, startPos, recLen, sstList) {
+    const chunks = [wbBytes.subarray(startPos, startPos + recLen)];
+    let lookPos = startPos + recLen;
+    while (lookPos < wbBytes.length - 4 && wbView.getUint16(lookPos, true) === 0x003C) { // CONTINUE
+      const contLen = wbView.getUint16(lookPos + 2, true);
+      chunks.push(wbBytes.subarray(lookPos + 4, lookPos + 4 + contLen));
+      lookPos += 4 + contLen;
+    }
+
+    let totalLen = 0;
+    for (const ch of chunks) totalLen += ch.length;
+    const full = new Uint8Array(totalLen);
+    let off = 0;
+    for (const ch of chunks) {
+      full.set(ch, off);
+      off += ch.length;
+    }
+    const fullView = new DataView(full.buffer, full.byteOffset, full.byteLength);
+
+    let p = 8;
+    const decUtf16 = new TextDecoder('utf-16le');
+    const decLatin1 = new TextDecoder('latin1');
+
+    while (p < full.length - 3) {
+      const cch = fullView.getUint16(p, true);
+      const grbit = full[p + 2];
+      p += 3;
+
+      const isUnicode = (grbit & 0x01) !== 0;
+      const hasRichText = (grbit & 0x08) !== 0;
+      const hasFarEast = (grbit & 0x04) !== 0;
+
+      let cRun = 0;
+      let cbExtRst = 0;
+      if (hasRichText) {
+        cRun = fullView.getUint16(p, true);
+        p += 2;
+      }
+      if (hasFarEast) {
+        cbExtRst = fullView.getUint32(p, true);
+        p += 4;
+      }
+
+      let str = '';
+      if (isUnicode) {
+        const byteLen = cch * 2;
+        if (p + byteLen <= full.length) {
+          str = decUtf16.decode(full.subarray(p, p + byteLen));
+          p += byteLen;
+        }
+      } else {
+        const byteLen = cch;
+        if (p + byteLen <= full.length) {
+          str = decLatin1.decode(full.subarray(p, p + byteLen));
+          p += byteLen;
+        }
+      }
+
+      if (hasRichText) p += cRun * 4;
+      if (hasFarEast) p += cbExtRst;
+
+      sstList.push(str);
+    }
+  }
+
+  // 解析高校教务系统导出的 .xls (BIFF8 二进制 / HTML / CSV) / .csv / 纯文本课表
   function handleXlsUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -1953,6 +2198,15 @@
     reader.onload = (event) => {
       try {
         const buffer = event.target.result;
+        const view = new DataView(buffer);
+
+        // 检测是否为真实二进制 Excel 97-2003 (BIFF8 OLE2 复合文档, 魔数: D0 CF 11 E0 A1 B1 1A E1)
+        if (buffer.byteLength >= 8 && view.getUint32(0, true) === 0xE011CFD0 && view.getUint32(4, true) === 0xE11AB1A1) {
+          const rows = parseBinaryXlsBuffer(buffer);
+          applyParsedData(parseUniversalRows(rows));
+          return;
+        }
+
         let text = '';
         try {
           text = new TextDecoder('utf-8').decode(buffer);
@@ -1970,8 +2224,9 @@
         applyParsedTimetableContent(text);
       } catch (err) {
         alert('解析课表文件出错：' + err.message);
+      } finally {
+        el.importXlsFileInput.value = '';
       }
-      el.importXlsFileInput.value = '';
     };
     reader.readAsArrayBuffer(file);
   }
@@ -1983,64 +2238,68 @@
     }
 
     try {
-      const { courses: parsedCourses, detectedTimes } = parseUniversalTimetable(rawContent);
-      if (!parsedCourses || parsedCourses.length === 0) {
-        alert('未在内容中解析出有效课程，请检查文件格式。');
-        return;
-      }
-
-      // 1. 如果解析出高校作息时间，自动适配作息表
-      if (detectedTimes && detectedTimes.length > 0) {
-        detectedTimes.forEach(t => {
-          if (t.period >= 1 && t.period <= DEFAULT_TIMES.length) {
-            const p1 = t.period;
-            const p2 = t.period + 1;
-            const [sH, sM] = t.start.split(':').map(Number);
-            const [eH, eM] = t.end.split(':').map(Number);
-            const totalDuration = (eH * 60 + eM) - (sH * 60 + sM);
-            if (totalDuration > 60 && p2 <= DEFAULT_TIMES.length) {
-              const mid = Math.round(totalDuration / 2);
-              const midH = Math.floor((sH * 60 + sM + mid) / 60);
-              const midM = (sH * 60 + sM + mid) % 60;
-              const midStr = `${String(midH).padStart(2, '0')}:${String(midM).padStart(2, '0')}`;
-              DEFAULT_TIMES[p1 - 1] = { start: t.start, end: midStr };
-              DEFAULT_TIMES[p2 - 1] = { start: midStr, end: t.end };
-            } else {
-              DEFAULT_TIMES[p1 - 1] = { start: t.start, end: t.end };
-            }
-          }
-        });
-      }
-
-      // 2. 自动检测最大节数
-      let maxPeriod = 11;
-      parsedCourses.forEach(c => {
-        if (c.endPeriod) maxPeriod = Math.max(maxPeriod, c.endPeriod);
-      });
-      if (maxPeriod > state.totalPeriods) {
-        state.totalPeriods = Math.min(14, maxPeriod);
-        el.totalPeriodsSelect.value = state.totalPeriods;
-      }
-
-      state.courses = parsedCourses;
-      saveCourses();
-      saveSettings();
-      calculateActualWeek();
-      const maxWeek = getMaxWeek();
-      if (state.currentWeek > maxWeek) {
-        state.currentWeek = maxWeek;
-      }
-      setupDropdown();
-      renderTimeColumn();
-      renderWeekHeader();
-      renderGrid();
-      renderCourseManagementList();
-      if (el.pasteModal) el.pasteModal.classList.add('hidden');
-      el.settingsModal.classList.add('hidden');
-      alert(`成功解析并导入 ${parsedCourses.length} 门课程！课表截止至第 ${maxWeek} 周。`);
+      const parsedData = parseUniversalTimetable(rawContent);
+      applyParsedData(parsedData);
     } catch (err) {
       alert('解析课表出错：' + err.message);
     }
+  }
+
+  function applyParsedData({ courses: parsedCourses, detectedTimes }) {
+    if (!parsedCourses || parsedCourses.length === 0) {
+      alert('未在内容中解析出有效课程，请检查文件格式。');
+      return;
+    }
+
+    // 1. 如果解析出高校作息时间，自动适配作息表
+    if (detectedTimes && detectedTimes.length > 0) {
+      detectedTimes.forEach(t => {
+        if (t.period >= 1 && t.period <= DEFAULT_TIMES.length) {
+          const p1 = t.period;
+          const p2 = t.period + 1;
+          const [sH, sM] = t.start.split(':').map(Number);
+          const [eH, eM] = t.end.split(':').map(Number);
+          const totalDuration = (eH * 60 + eM) - (sH * 60 + sM);
+          if (totalDuration > 60 && p2 <= DEFAULT_TIMES.length) {
+            const mid = Math.round(totalDuration / 2);
+            const midH = Math.floor((sH * 60 + sM + mid) / 60);
+            const midM = (sH * 60 + sM + mid) % 60;
+            const midStr = `${String(midH).padStart(2, '0')}:${String(midM).padStart(2, '0')}`;
+            DEFAULT_TIMES[p1 - 1] = { start: t.start, end: midStr };
+            DEFAULT_TIMES[p2 - 1] = { start: midStr, end: t.end };
+          } else {
+            DEFAULT_TIMES[p1 - 1] = { start: t.start, end: t.end };
+          }
+        }
+      });
+    }
+
+    // 2. 自动检测最大节数
+    let maxPeriod = 11;
+    parsedCourses.forEach(c => {
+      if (c.endPeriod) maxPeriod = Math.max(maxPeriod, c.endPeriod);
+    });
+    if (maxPeriod > state.totalPeriods) {
+      state.totalPeriods = Math.min(14, maxPeriod);
+      el.totalPeriodsSelect.value = state.totalPeriods;
+    }
+
+    state.courses = parsedCourses;
+    saveCourses();
+    saveSettings();
+    calculateActualWeek();
+    const maxWeek = getMaxWeek();
+    if (state.currentWeek > maxWeek) {
+      state.currentWeek = maxWeek;
+    }
+    setupDropdown();
+    renderTimeColumn();
+    renderWeekHeader();
+    renderGrid();
+    renderCourseManagementList();
+    if (el.pasteModal) el.pasteModal.classList.add('hidden');
+    el.settingsModal.classList.add('hidden');
+    alert(`成功解析并导入 ${parsedCourses.length} 门课程！课表截止至第 ${maxWeek} 周。`);
   }
 
   function parseUniversalTimetable(rawContent) {
@@ -2094,6 +2353,10 @@
       }
     }
 
+    return parseUniversalRows(rows);
+  }
+
+  function parseUniversalRows(rows) {
     // 3. 定位星期一至星期日所在表头行
     let headerRowIndex = -1;
     const dayColMap = {}; // colIndex -> day (1-7)
@@ -2102,7 +2365,7 @@
       const row = rows[r];
       let found = false;
       row.forEach((cell, c) => {
-        const t = cell.trim();
+        const t = (cell || '').trim();
         if (/星期一|周一/.test(t)) { dayColMap[c] = 1; found = true; }
         else if (/星期二|周二/.test(t)) { dayColMap[c] = 2; found = true; }
         else if (/星期三|周三/.test(t)) { dayColMap[c] = 3; found = true; }
@@ -2141,7 +2404,7 @@
       // 扫描非星期列，提取节次或时间信息
       for (let c = 0; c < row.length; c++) {
         if (dayColMap[c]) continue;
-        const cell = row[c].trim();
+        const cell = (row[c] || '').trim();
         const pMatch = cell.match(/第?(\d+)(?:-(\d+))?节/);
         if (pMatch) {
           defaultStart = parseInt(pMatch[1], 10);
