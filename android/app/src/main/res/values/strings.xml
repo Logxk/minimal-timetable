@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">极简课表</string>
+    <string name="prev_week">上一周</string>
+    <string name="next_week">下一周</string>
+    <string name="today">今天</string>
+    <string name="add_course">添加课程</string>
+    <string name="edit_course">编辑课程</string>
+    <string name="course_name">课程名称</string>
+    <string name="course_room">教室地点</string>
+    <string name="course_teacher">授课教师</string>
+    <string name="save">保存</string>
+    <string name="delete">删除</string>
+    <string name="cancel">取消</string>
+</resources>

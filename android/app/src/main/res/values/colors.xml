@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_window">#F8F9FA</color>
+    <color name="bg_card">#FFFFFF</color>
+    <color name="text_primary">#1A1A1A</color>
+    <color name="text_secondary">#757575</color>
+    <color name="divider">#E0E0E0</color>
+    <color name="primary">#228BE6</color>
+    <color name="primary_light">#E7F5FF</color>
+    <color name="danger">#FA5252</color>
+</resources>
