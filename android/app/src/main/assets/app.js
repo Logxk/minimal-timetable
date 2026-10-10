@@ -13,8 +13,8 @@
   const STORAGE_KEY = 'minimal_timetable_data_v2';
   const SETTINGS_KEY = 'minimal_timetable_settings_v2';
 
-  // 本部实际作息时间表 (1-11节)
-  const DEFAULT_TIMES = [
+  // 大学作息时间表 (支持自动适配教务作息，1-14节)
+  let DEFAULT_TIMES = [
     { start: '08:00', end: '08:45' }, // 1
     { start: '08:55', end: '09:40' }, // 2
     { start: '10:10', end: '10:55' }, // 3
@@ -25,7 +25,10 @@
     { start: '17:35', end: '18:20' }, // 8
     { start: '19:00', end: '19:45' }, // 9
     { start: '19:55', end: '20:40' }, // 10
-    { start: '20:45', end: '21:30' }  // 11
+    { start: '20:45', end: '21:30' }, // 11
+    { start: '21:35', end: '22:20' }, // 12
+    { start: '22:25', end: '23:10' }, // 13
+    { start: '23:15', end: '23:59' }  // 14
   ];
 
   // 现代高饱和、高辨识度纯色卡片配色池 (高对比度纯白文字，对标高端课表APP)
@@ -427,6 +430,14 @@
     el.reminderBannerTitle = document.getElementById('reminderBannerTitle');
     el.reminderBannerDesc = document.getElementById('reminderBannerDesc');
     el.reminderBannerClose = document.getElementById('reminderBannerClose');
+
+    // 粘贴课表导入 DOM
+    el.pasteScheduleBtn = document.getElementById('pasteScheduleBtn');
+    el.pasteModal = document.getElementById('pasteModal');
+    el.pasteCloseBtn = document.getElementById('pasteCloseBtn');
+    el.pasteCancelBtn = document.getElementById('pasteCancelBtn');
+    el.pasteConfirmBtn = document.getElementById('pasteConfirmBtn');
+    el.pasteTextarea = document.getElementById('pasteTextarea');
   }
 
   // ==========================================================================
@@ -444,6 +455,9 @@
         state.classReminderEnabled = parsed.classReminderEnabled === true;
         state.calendarSynced = parsed.calendarSynced === true;
         state.calendarSyncCount = parsed.calendarSyncCount || 0;
+        if (Array.isArray(parsed.customTimes) && parsed.customTimes.length > 0) {
+          DEFAULT_TIMES = parsed.customTimes;
+        }
       } else {
         state.semesterStartDate = '2026-08-31';
         state.totalPeriods = 11;
@@ -478,7 +492,8 @@
       showOtherWeeks: state.showOtherWeeks,
       classReminderEnabled: state.classReminderEnabled,
       calendarSynced: state.calendarSynced,
-      calendarSyncCount: state.calendarSyncCount
+      calendarSyncCount: state.calendarSyncCount,
+      customTimes: DEFAULT_TIMES
     };
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(data));
   }
@@ -683,6 +698,10 @@
     el.detailEditActionBtn.addEventListener('click', handleDetailEdit);
 
     window.__handleAndroidBack = function() {
+      if (el.pasteModal && !el.pasteModal.classList.contains('hidden')) {
+        el.pasteModal.classList.add('hidden');
+        return true;
+      }
       if (!el.courseDetailModal.classList.contains('hidden')) {
         closeCourseDetail();
         return true;
@@ -739,6 +758,33 @@
     if (el.importXlsBtn && el.importXlsFileInput) {
       el.importXlsBtn.addEventListener('click', () => el.importXlsFileInput.click());
       el.importXlsFileInput.addEventListener('change', handleXlsUpload);
+    }
+
+    if (el.pasteScheduleBtn) {
+      el.pasteScheduleBtn.addEventListener('click', () => {
+        if (el.pasteTextarea) el.pasteTextarea.value = '';
+        if (el.pasteModal) el.pasteModal.classList.remove('hidden');
+      });
+    }
+    if (el.pasteCloseBtn) {
+      el.pasteCloseBtn.addEventListener('click', () => {
+        if (el.pasteModal) el.pasteModal.classList.add('hidden');
+      });
+    }
+    if (el.pasteCancelBtn) {
+      el.pasteCancelBtn.addEventListener('click', () => {
+        if (el.pasteModal) el.pasteModal.classList.add('hidden');
+      });
+    }
+    if (el.pasteConfirmBtn) {
+      el.pasteConfirmBtn.addEventListener('click', () => {
+        const text = el.pasteTextarea ? el.pasteTextarea.value.trim() : '';
+        if (!text) {
+          alert('请先粘贴课表内容');
+          return;
+        }
+        applyParsedTimetableContent(text);
+      });
     }
 
     el.exportIcsBtn.addEventListener('click', exportIcs);
@@ -1898,7 +1944,7 @@
     reader.readAsText(file);
   }
 
-  // 解析高校教务系统导出的 .xls (HTML 表格格式)
+  // 解析高校教务系统导出的 .xls / .csv / HTML / 纯文本课表
   function handleXlsUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -1906,41 +1952,394 @@
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
-        const htmlStr = event.target.result;
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(htmlStr, 'text/html');
-
-        const table = doc.getElementById('manualArrangeCourseTable') || doc.querySelector('table.gridtable') || doc.querySelector('table');
-        if (!table) {
-          alert('未能识别到有效的课表表格结构');
-          return;
-        }
-
-        const parsedCourses = parseUniversityHtmlTable(doc, table);
-        if (parsedCourses.length > 0) {
-          state.courses = parsedCourses;
-          saveCourses();
-          calculateActualWeek();
-          const maxWeek = getMaxWeek();
-          if (state.currentWeek > maxWeek) {
-            state.currentWeek = maxWeek;
+        const buffer = event.target.result;
+        let text = '';
+        try {
+          text = new TextDecoder('utf-8').decode(buffer);
+          if (text.includes('\uFFFD')) {
+            text = new TextDecoder('gbk').decode(buffer);
           }
-          setupDropdown();
-          renderTimeColumn();
-          renderWeekHeader();
-          renderGrid();
-          renderCourseManagementList();
-          el.settingsModal.classList.add('hidden');
-          alert(`成功解析并导入 ${parsedCourses.length} 门课程！课表截止至第 ${maxWeek} 周。`);
-        } else {
-          alert('未在文件中解析出有效课程。');
+        } catch (decErr) {
+          try {
+            text = new TextDecoder('gbk').decode(buffer);
+          } catch (e2) {
+            text = new TextDecoder().decode(buffer);
+          }
         }
+
+        applyParsedTimetableContent(text);
       } catch (err) {
         alert('解析课表文件出错：' + err.message);
       }
       el.importXlsFileInput.value = '';
     };
-    reader.readAsText(file, 'UTF-8');
+    reader.readAsArrayBuffer(file);
+  }
+
+  function applyParsedTimetableContent(rawContent) {
+    if (!rawContent || !rawContent.trim()) {
+      alert('课表内容为空');
+      return;
+    }
+
+    try {
+      const { courses: parsedCourses, detectedTimes } = parseUniversalTimetable(rawContent);
+      if (!parsedCourses || parsedCourses.length === 0) {
+        alert('未在内容中解析出有效课程，请检查文件格式。');
+        return;
+      }
+
+      // 1. 如果解析出高校作息时间，自动适配作息表
+      if (detectedTimes && detectedTimes.length > 0) {
+        detectedTimes.forEach(t => {
+          if (t.period >= 1 && t.period <= DEFAULT_TIMES.length) {
+            const p1 = t.period;
+            const p2 = t.period + 1;
+            const [sH, sM] = t.start.split(':').map(Number);
+            const [eH, eM] = t.end.split(':').map(Number);
+            const totalDuration = (eH * 60 + eM) - (sH * 60 + sM);
+            if (totalDuration > 60 && p2 <= DEFAULT_TIMES.length) {
+              const mid = Math.round(totalDuration / 2);
+              const midH = Math.floor((sH * 60 + sM + mid) / 60);
+              const midM = (sH * 60 + sM + mid) % 60;
+              const midStr = `${String(midH).padStart(2, '0')}:${String(midM).padStart(2, '0')}`;
+              DEFAULT_TIMES[p1 - 1] = { start: t.start, end: midStr };
+              DEFAULT_TIMES[p2 - 1] = { start: midStr, end: t.end };
+            } else {
+              DEFAULT_TIMES[p1 - 1] = { start: t.start, end: t.end };
+            }
+          }
+        });
+      }
+
+      // 2. 自动检测最大节数
+      let maxPeriod = 11;
+      parsedCourses.forEach(c => {
+        if (c.endPeriod) maxPeriod = Math.max(maxPeriod, c.endPeriod);
+      });
+      if (maxPeriod > state.totalPeriods) {
+        state.totalPeriods = Math.min(14, maxPeriod);
+        el.totalPeriodsSelect.value = state.totalPeriods;
+      }
+
+      state.courses = parsedCourses;
+      saveCourses();
+      saveSettings();
+      calculateActualWeek();
+      const maxWeek = getMaxWeek();
+      if (state.currentWeek > maxWeek) {
+        state.currentWeek = maxWeek;
+      }
+      setupDropdown();
+      renderTimeColumn();
+      renderWeekHeader();
+      renderGrid();
+      renderCourseManagementList();
+      if (el.pasteModal) el.pasteModal.classList.add('hidden');
+      el.settingsModal.classList.add('hidden');
+      alert(`成功解析并导入 ${parsedCourses.length} 门课程！课表截止至第 ${maxWeek} 周。`);
+    } catch (err) {
+      alert('解析课表出错：' + err.message);
+    }
+  }
+
+  function parseUniversalTimetable(rawContent) {
+    let rows = [];
+
+    // 1. 如果包含 HTML 表格标记，使用 DOMParser 提取表格行
+    if (/<table|<tr|<html/i.test(rawContent)) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(rawContent, 'text/html');
+
+      const table = doc.getElementById('manualArrangeCourseTable') || doc.querySelector('table.gridtable') || doc.querySelector('table');
+      if (table) {
+        const trs = Array.from(table.querySelectorAll('tr'));
+        let hasPeriodFirstCol = false;
+        for (const tr of trs) {
+          const firstTd = tr.querySelector('td,th');
+          if (firstTd && /第([一二三四五六七八九十0-9]+)节/.test(firstTd.textContent)) {
+            hasPeriodFirstCol = true;
+            break;
+          }
+        }
+
+        if (hasPeriodFirstCol) {
+          return { courses: parseUniversityHtmlTable(doc, table), detectedTimes: [] };
+        }
+
+        for (const tr of trs) {
+          const cells = Array.from(tr.querySelectorAll('td,th')).map(c => {
+            return c.innerHTML
+              .replace(/<br[^>]*>/gi, '\n')
+              .replace(/<[^>]+>/g, '')
+              .replace(/&nbsp;/gi, ' ')
+              .replace(/&amp;/gi, '&')
+              .replace(/&lt;/gi, '<')
+              .replace(/&gt;/gi, '>')
+              .trim();
+          });
+          if (cells.length > 0) rows.push(cells);
+        }
+      }
+    }
+
+    // 2. 如果不是 HTML 或 HTML 中没有找到传统结构，按 CSV / TSV 格式解析
+    if (rows.length === 0) {
+      const tabCount = (rawContent.match(/\t/g) || []).length;
+      const commaCount = (rawContent.match(/,/g) || []).length;
+      if (tabCount > commaCount && tabCount > 10) {
+        rows = rawContent.split(/\r?\n/).map(line => line.split('\t').map(c => c.trim().replace(/^["']|["']$/g, '')));
+      } else {
+        rows = parseCsvRows(rawContent);
+      }
+    }
+
+    // 3. 定位星期一至星期日所在表头行
+    let headerRowIndex = -1;
+    const dayColMap = {}; // colIndex -> day (1-7)
+
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
+      let found = false;
+      row.forEach((cell, c) => {
+        const t = cell.trim();
+        if (/星期一|周一/.test(t)) { dayColMap[c] = 1; found = true; }
+        else if (/星期二|周二/.test(t)) { dayColMap[c] = 2; found = true; }
+        else if (/星期三|周三/.test(t)) { dayColMap[c] = 3; found = true; }
+        else if (/星期四|周四/.test(t)) { dayColMap[c] = 4; found = true; }
+        else if (/星期五|周五/.test(t)) { dayColMap[c] = 5; found = true; }
+        else if (/星期六|周六/.test(t)) { dayColMap[c] = 6; found = true; }
+        else if (/星期日|星期天|周日/.test(t)) { dayColMap[c] = 7; found = true; }
+      });
+      if (found) {
+        headerRowIndex = r;
+        break;
+      }
+    }
+
+    if (headerRowIndex === -1) {
+      throw new Error('未在课表中识别到包含“星期一至星期日”的列头结构，请确认导出的表格包含星期标识。');
+    }
+
+    const detectedTimes = [];
+    const courses = [];
+
+    for (let r = headerRowIndex + 1; r < rows.length; r++) {
+      const row = rows[r];
+      if (!row || row.length === 0) continue;
+
+      // 过滤备注/说明行
+      const rowText = row.join(' ');
+      if (/^[,，\s]*备注/.test(rowText) || (row[0] && row[0].includes('备注')) || (row[1] && row[1].includes('备注'))) {
+        continue;
+      }
+
+      // 默认节次按行递增 (每大节占2小节: 1-2, 3-4, 5-6, 7-8, 9-10, 11-12)
+      let defaultStart = (r - headerRowIndex) * 2 - 1;
+      let defaultEnd = defaultStart + 1;
+
+      // 扫描非星期列，提取节次或时间信息
+      for (let c = 0; c < row.length; c++) {
+        if (dayColMap[c]) continue;
+        const cell = row[c].trim();
+        const pMatch = cell.match(/第?(\d+)(?:-(\d+))?节/);
+        if (pMatch) {
+          defaultStart = parseInt(pMatch[1], 10);
+          defaultEnd = pMatch[2] ? parseInt(pMatch[2], 10) : defaultStart;
+        }
+
+        // 扫描作息时间如 "8:20 9:50" 或 "8:20-9:50"
+        const timeMatch = cell.match(/(\d{1,2}:\d{2})[\s\n\r\-至~]+(\d{1,2}:\d{2})/);
+        if (timeMatch) {
+          const sTime = timeMatch[1].padStart(5, '0');
+          const eTime = timeMatch[2].padStart(5, '0');
+          detectedTimes.push({ period: defaultStart, start: sTime, end: eTime });
+        }
+      }
+
+      // 遍历各个星期列提取课程
+      for (const [colIdxStr, day] of Object.entries(dayColMap)) {
+        const colIdx = parseInt(colIdxStr, 10);
+        const cell = row[colIdx];
+        if (cell && cell.trim()) {
+          const cellCourses = parseCellCourses(cell, day, defaultStart, defaultEnd);
+          courses.push(...cellCourses);
+        }
+      }
+    }
+
+    return { courses, detectedTimes };
+  }
+
+  function parseCsvRows(text) {
+    const rows = [];
+    let currentRow = [];
+    let currentCell = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      const nextChar = text[i + 1];
+
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          currentCell += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        currentRow.push(currentCell);
+        currentCell = '';
+      } else if ((char === '\r' || char === '\n') && !inQuotes) {
+        if (char === '\r' && nextChar === '\n') i++;
+        currentRow.push(currentCell);
+        rows.push(currentRow);
+        currentRow = [];
+        currentCell = '';
+      } else {
+        currentCell += char;
+      }
+    }
+    if (currentCell || currentRow.length > 0) {
+      currentRow.push(currentCell);
+      rows.push(currentRow);
+    }
+    return rows;
+  }
+
+  function parseWeeksList(weekStr) {
+    let clean = weekStr.replace(/[\[\]周\s]/g, '');
+    const isOdd = clean.includes('单');
+    const isEven = clean.includes('双');
+    clean = clean.replace(/[()（）单双]/g, '');
+
+    const weeks = [];
+    const parts = clean.split(/[,，]/);
+    for (const part of parts) {
+      if (!part) continue;
+      if (part.includes('-')) {
+        const [start, end] = part.split('-').map(Number);
+        if (!isNaN(start) && !isNaN(end)) {
+          for (let w = start; w <= end; w++) {
+            if (isOdd && w % 2 === 0) continue;
+            if (isEven && w % 2 !== 0) continue;
+            weeks.push(w);
+          }
+        }
+      } else {
+        const w = parseInt(part, 10);
+        if (!isNaN(w)) {
+          if (isOdd && w % 2 === 0) continue;
+          if (isEven && w % 2 !== 0) continue;
+          weeks.push(w);
+        }
+      }
+    }
+    return [...new Set(weeks)].sort((a, b) => a - b);
+  }
+
+  function parseCellCourses(cellText, day, defaultStartPeriod, defaultEndPeriod) {
+    if (!cellText || !cellText.trim()) return [];
+
+    let text = cellText
+      .replace(/\.\.\.查看全部/g, '')
+      .replace(/查看全部/g, '')
+      .trim();
+
+    if (!text) return [];
+
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) return [];
+
+    const weekRegex = /\[([\d,\-，\s]+周(?:[()（）单双])?)\]/;
+    const courses = [];
+    let currentCourseLines = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      currentCourseLines.push(line);
+
+      if (weekRegex.test(line)) {
+        const course = buildCourseFromBlock(currentCourseLines, day, defaultStartPeriod, defaultEndPeriod);
+        if (course) courses.push(course);
+        currentCourseLines = [];
+      }
+    }
+
+    if (currentCourseLines.length > 0) {
+      const course = buildCourseFromBlock(currentCourseLines, day, defaultStartPeriod, defaultEndPeriod);
+      if (course && course.name && course.weeks.length > 0) courses.push(course);
+    }
+
+    return courses;
+  }
+
+  function buildCourseFromBlock(lines, day, defaultStartPeriod, defaultEndPeriod) {
+    if (!lines || lines.length === 0) return null;
+
+    let name = '';
+    let teacher = '';
+    let room = '';
+    let weeks = [];
+    let startPeriod = defaultStartPeriod;
+    let endPeriod = defaultEndPeriod;
+
+    let weekLineIndex = lines.findIndex(l => /\[.*周.*\]/.test(l));
+
+    if (weekLineIndex !== -1) {
+      const weekLine = lines[weekLineIndex];
+      const weekMatch = weekLine.match(/\[([\d,\-，\s]+周(?:[()（）单双])?)\]/);
+      if (weekMatch) {
+        weeks = parseWeeksList(weekMatch[1]);
+      }
+
+      const periodMatch = weekLine.match(/\[(\d+)(?:-(\d+))?节\]/);
+      if (periodMatch) {
+        startPeriod = parseInt(periodMatch[1], 10);
+        endPeriod = periodMatch[2] ? parseInt(periodMatch[2], 10) : startPeriod;
+      }
+
+      const beforeLines = lines.slice(0, weekLineIndex);
+      if (beforeLines.length >= 1) {
+        name = beforeLines[0].replace(/[-_]$/, '').trim();
+      }
+      if (beforeLines.length === 2) {
+        const l = beforeLines[1];
+        if (/[\d号楼室区馆堂场]/.test(l)) {
+          room = l;
+        } else {
+          teacher = l;
+        }
+      } else if (beforeLines.length >= 3) {
+        teacher = beforeLines[1];
+        room = beforeLines.slice(2).join(' ');
+      }
+    } else {
+      name = lines[0].replace(/[-_]$/, '').trim();
+      if (lines.length > 1) teacher = lines[1];
+      if (lines.length > 2) room = lines[2];
+      weeks = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+    }
+
+    if (!name) return null;
+
+    const startWeek = weeks.length > 0 ? Math.min(...weeks) : 1;
+    const endWeek = weeks.length > 0 ? Math.max(...weeks) : 16;
+
+    return {
+      id: `c_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      name: name,
+      teacher: teacher,
+      room: room,
+      day: day,
+      startPeriod: startPeriod,
+      endPeriod: endPeriod,
+      startWeek: startWeek,
+      endWeek: endWeek,
+      weeks: weeks,
+      weekType: 'all'
+    };
   }
 
   function parseUniversityHtmlTable(doc, table) {

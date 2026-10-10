@@ -281,14 +281,15 @@ public class MainActivity extends Activity {
                 Calendar startMondayCal = Calendar.getInstance();
                 startMondayCal.setTime(startMondayDate);
 
-                // 作息时间表 (1-11节)
+                // 作息时间表 (1-14节)
                 String[][] periodTimes = {
                     {"08:00", "08:45"}, {"08:55", "09:40"},
                     {"10:10", "10:55"}, {"11:05", "11:50"},
                     {"14:30", "15:15"}, {"15:25", "16:10"},
                     {"16:40", "17:25"}, {"17:35", "18:20"},
                     {"19:00", "19:45"}, {"19:55", "20:40"},
-                    {"20:45", "21:30"}
+                    {"20:45", "21:30"}, {"21:35", "22:20"},
+                    {"22:25", "23:10"}, {"23:15", "23:59"}
                 };
 
                 JSONArray coursesArray = new JSONArray(coursesJson);
@@ -304,8 +305,10 @@ public class MainActivity extends Activity {
                     int startPeriod = c.optInt("startPeriod", 1);
                     int endPeriod = c.optInt("endPeriod", 2);
 
-                    String startTimeStr = (startPeriod >= 1 && startPeriod <= 11) ? periodTimes[startPeriod - 1][0] : "08:00";
-                    String endTimeStr = (endPeriod >= 1 && endPeriod <= 11) ? periodTimes[endPeriod - 1][1] : "09:40";
+                    String defaultStart = (startPeriod >= 1 && startPeriod <= periodTimes.length) ? periodTimes[startPeriod - 1][0] : "08:00";
+                    String defaultEnd = (endPeriod >= 1 && endPeriod <= periodTimes.length) ? periodTimes[endPeriod - 1][1] : "09:40";
+                    String startTimeStr = c.optString("startTime", defaultStart);
+                    String endTimeStr = c.optString("endTime", defaultEnd);
 
                     String[] startHM = startTimeStr.split(":");
                     String[] endHM = endTimeStr.split(":");
@@ -358,19 +361,19 @@ public class MainActivity extends Activity {
                         values.put(Events.DTEND, endCal.getTimeInMillis());
                         values.put(Events.EVENT_TIMEZONE, TimeZone.getDefault().getID());
                         values.put(Events.HAS_ALARM, 1);
-                        values.put(Events.CUSTOM_APP_PACKAGE, getPackageName());
-                        values.put(Events.SYNC_DATA1, "minimal_timetable_event");
 
                         Uri uri = cr.insert(Events.CONTENT_URI, values);
                         if (uri != null) {
                             totalCreated++;
                             long eventId = ContentUris.parseId(uri);
                             // 设定课前 10 分钟系统提醒
-                            ContentValues remVal = new ContentValues();
-                            remVal.put(Reminders.EVENT_ID, eventId);
-                            remVal.put(Reminders.MINUTES, 10);
-                            remVal.put(Reminders.METHOD, Reminders.METHOD_ALERT);
-                            cr.insert(Reminders.CONTENT_URI, remVal);
+                            try {
+                                ContentValues remVal = new ContentValues();
+                                remVal.put(Reminders.EVENT_ID, eventId);
+                                remVal.put(Reminders.MINUTES, 10);
+                                remVal.put(Reminders.METHOD, Reminders.METHOD_ALERT);
+                                cr.insert(Reminders.CONTENT_URI, remVal);
+                            } catch (Exception ignored) {}
                         }
                     }
                 }
@@ -420,18 +423,15 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public int getCalendarEventCount() {
             if (!hasCalendarPermission()) return 0;
-            try {
-                Cursor cursor = getContentResolver().query(
-                    Events.CONTENT_URI,
-                    new String[]{Events._ID},
-                    Events.SYNC_DATA1 + " = ? OR " + Events.DESCRIPTION + " LIKE ?",
-                    new String[]{"minimal_timetable_event", "%[极简课表自动托管]%"},
-                    null
-                );
+            try (Cursor cursor = getContentResolver().query(
+                Events.CONTENT_URI,
+                new String[]{Events._ID},
+                Events.DESCRIPTION + " LIKE ?",
+                new String[]{"%[极简课表自动托管]%"},
+                null
+            )) {
                 if (cursor != null) {
-                    int c = cursor.getCount();
-                    cursor.close();
-                    return c;
+                    return cursor.getCount();
                 }
             } catch (Exception e) {
                 e.printStackTrace();
@@ -482,7 +482,8 @@ public class MainActivity extends Activity {
                     {"14:30", "15:15"}, {"15:25", "16:10"},
                     {"16:40", "17:25"}, {"17:35", "18:20"},
                     {"19:00", "19:45"}, {"19:55", "20:40"},
-                    {"20:45", "21:30"}
+                    {"20:45", "21:30"}, {"21:35", "22:20"},
+                    {"22:25", "23:10"}, {"23:15", "23:59"}
                 };
 
                 JSONArray coursesArray = new JSONArray(coursesJson);
@@ -496,7 +497,8 @@ public class MainActivity extends Activity {
                     String teacher = c.optString("teacher", "");
                     int day = c.optInt("day", 1);
                     int startPeriod = c.optInt("startPeriod", 1);
-                    String startTimeStr = (startPeriod >= 1 && startPeriod <= 11) ? periodTimes[startPeriod - 1][0] : "08:00";
+                    String defaultStart = (startPeriod >= 1 && startPeriod <= periodTimes.length) ? periodTimes[startPeriod - 1][0] : "08:00";
+                    String startTimeStr = c.optString("startTime", defaultStart);
                     String[] hm = startTimeStr.split(":");
                     int startH = Integer.parseInt(hm[0]);
                     int startM = Integer.parseInt(hm[1]);
@@ -587,11 +589,16 @@ public class MainActivity extends Activity {
 
     private int clearCalendarEventsInternal() {
         ContentResolver cr = getContentResolver();
-        return cr.delete(
-            Events.CONTENT_URI,
-            Events.SYNC_DATA1 + " = ? OR " + Events.DESCRIPTION + " LIKE ?",
-            new String[]{"minimal_timetable_event", "%[极简课表自动托管]%"}
-        );
+        try {
+            return cr.delete(
+                Events.CONTENT_URI,
+                Events.DESCRIPTION + " LIKE ?",
+                new String[]{"%[极简课表自动托管]%"}
+            );
+        } catch (Exception e) {
+            e.printStackTrace();
+            return 0;
+        }
     }
 
     private void cancelAlarmReminders(AlarmManager am) {
@@ -616,18 +623,25 @@ public class MainActivity extends Activity {
         ContentResolver cr = getContentResolver();
         try (Cursor cursor = cr.query(
             CalendarContract.Calendars.CONTENT_URI,
-            new String[]{CalendarContract.Calendars._ID, CalendarContract.Calendars.IS_PRIMARY},
+            new String[]{
+                CalendarContract.Calendars._ID,
+                CalendarContract.Calendars.IS_PRIMARY,
+                CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL
+            },
             null, null, null
         )) {
             if (cursor != null) {
                 while (cursor.moveToNext()) {
                     long id = cursor.getLong(0);
                     int isPrimary = cursor.getInt(1);
-                    if (isPrimary != 0) {
-                        return id;
-                    }
-                    if (calId == -1) {
-                        calId = id;
+                    int access = cursor.getInt(2);
+                    if (access >= CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR) {
+                        if (isPrimary != 0) {
+                            return id;
+                        }
+                        if (calId == -1) {
+                            calId = id;
+                        }
                     }
                 }
             }

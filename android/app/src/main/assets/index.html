@@ -292,14 +292,18 @@
             </button>
             <button id="importXlsBtn" class="secondary-btn full-width" style="border-color: var(--accent-color); color: var(--accent-text);">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
-              导入教务课表 (.xls / HTML)
+              导入教务课表 (.xls / .csv / HTML)
+            </button>
+            <button id="pasteScheduleBtn" class="secondary-btn full-width" style="border-style: dashed; font-size: 13px;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
+              粘贴教务课表文本快速导入
             </button>
             <button id="exportIcsBtn" class="secondary-btn full-width">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
               导出日历文件 (.ics 导入系统日历)
             </button>
             <input type="file" id="importFileInput" accept=".json" class="hidden">
-            <input type="file" id="importXlsFileInput" accept=".xls,.html" class="hidden">
+            <input type="file" id="importXlsFileInput" accept=".xls,.xlsx,.csv,.html,.htm,.txt" class="hidden">
           </div>
 
           <div class="setting-divider"></div>
@@ -404,6 +408,26 @@
         <!-- 操作按钮 -->
         <div class="detail-footer-box">
           <button id="detailEditActionBtn" class="primary-btn full-width">编辑此课程</button>
+        </div>
+      </div>
+    <!-- 粘贴课表文本导入模态框 -->
+    <div id="pasteModal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>粘贴教务课表文本导入</h3>
+          <button id="pasteCloseBtn" class="icon-btn close-btn">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+        <div class="modal-body" style="padding: 16px;">
+          <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 8px;">
+            请将教务系统课表内容（支持表格复制、CSV 文本、HTML 源代码）直接粘贴在下方：
+          </div>
+          <textarea id="pasteTextarea" class="setting-input" rows="8" placeholder="在此处粘贴课表内容，例如：&#10;,节次,,,时间,星期一,星期二...&#10;8:20 9:50 传感器课程设计..." style="width: 100%; height: 180px; font-family: monospace; font-size: 12px; resize: vertical; border-radius: 8px; padding: 10px;"></textarea>
+          <div style="margin-top: 14px; display: flex; gap: 10px; justify-content: flex-end;">
+            <button type="button" id="pasteCancelBtn" class="cancel-btn">取消</button>
+            <button type="button" id="pasteConfirmBtn" class="primary-btn">开始解析导入</button>
+          </div>
         </div>
       </div>
     </div>
